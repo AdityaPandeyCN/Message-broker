@@ -1,110 +1,105 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
 )
 
-type Message struct {
-	Topic   string
-	Payload interface{}
+type Event struct {
+   Topic string
+   Data  interface{}
 }
 
-
-type Subscriber struct {
-	Channel     chan interface{}
-	Unsubscribe chan bool
+type EventBus struct {
+   topics map[string][]chan Event
+   mu     sync.RWMutex
+   ctx    context.Context
+   cancel context.CancelFunc
 }
 
-
-type Broker struct {
-	subscribers map[string][]*Subscriber
-	mutex      sync.Mutex
+func NewEventBus() *EventBus {
+   ctx, cancel := context.WithCancel(context.Background())
+   return &EventBus{
+       topics:  make(map[string][]chan Event),
+       ctx:     ctx,
+       cancel:  cancel,
+   }
 }
 
+func (eb *EventBus) Subscribe(topic string, bufSize int) (<-chan Event, func()) {
+   eb.mu.Lock()
+   defer eb.mu.Unlock()
 
-func NewBroker() *Broker {
-	return &Broker{
-		subscribers: make(map[string][]*Subscriber),
-	}
+   ch := make(chan Event, bufSize)
+   eb.topics[topic] = append(eb.topics[topic], ch)
+
+   unsubscribe := func() {
+       eb.mu.Lock()
+       defer eb.mu.Unlock()
+
+       for i, sub := range eb.topics[topic] {
+           if sub == ch {
+               close(ch)
+               eb.topics[topic] = append(eb.topics[topic][:i], eb.topics[topic][i+1:]...)
+               break
+           }
+       }
+       fmt.Printf("Unsubscribed from topic: %s\n", topic)
+   }
+
+   return ch, unsubscribe
 }
 
+func (eb *EventBus) Publish(event Event) {
+   eb.mu.RLock()
+   defer eb.mu.RUnlock()
 
-func (b *Broker) Subscribe(topic string) *Subscriber {
-	b.mutex.Lock()
-	defer b.mutex.Unlock()
-
-	subscriber := &Subscriber{
-		Channel:     make(chan interface{}, 1),
-		Unsubscribe: make(chan bool),
-	}
-
-	b.subscribers[topic] = append(b.subscribers[topic], subscriber)
-
-	return subscriber
-}
-
-
-func (b *Broker) Unsubscribe(topic string, subscriber *Subscriber) {
-	b.mutex.Lock()
-	defer b.mutex.Unlock()
-
-	if subscribers, found := b.subscribers[topic]; found {
-		for i, sub := range subscribers {
-			if sub == subscriber {
-				close(sub.Channel)
-				b.subscribers[topic] = append(subscribers[:i], subscribers[i+1:]...)
-				return
-			}
-		}
-	}
-}
-
-
-func (b *Broker) Publish(topic string, payload interface{}) {
-	b.mutex.Lock()
-	defer b.mutex.Unlock()
-
-	if subscribers, found := b.subscribers[topic]; found {
-		for _, sub := range subscribers {
-			select {
-			case sub.Channel <- payload:
-			case <-time.After(time.Second):
-				fmt.Printf("Subscriber slow. Unsubscribing from topic: %s\n", topic)
-				b.Unsubscribe(topic, sub)
-			}
-		}
-	}
+   for _, ch := range eb.topics[event.Topic] {
+       select {
+       case ch <- event:
+           fmt.Printf("Published message to topic %s: %v\n", event.Topic, event.Data)
+       default:
+           fmt.Printf("Dropped message for topic %s due to full buffer\n", event.Topic)
+       }
+   }
 }
 
 func main() {
-	broker := NewBroker()
+   bus := NewEventBus()
 
-	subscriber := broker.Subscribe("example_topic")
-	go func() {
-		for {
-			select {
-			case msg, ok := <-subscriber.Channel:
-				if !ok {
-					fmt.Println("Subscriber channel closed.")
-					return
-				}
-				fmt.Printf("Received: %v\n", msg)
-			case <-subscriber.Unsubscribe:
-				fmt.Println("Unsubscribed.")
-				return
-			}
-		}
-	}()
+   ch1, unsub1 := bus.Subscribe("orders", 10)
+   ch2, unsub2 := bus.Subscribe("orders", 10) 
 
-	broker.Publish("example_topic", "Hi,Aditya!")
-	broker.Publish("example_topic", "This is a test message.")
+   // First subscriber
+   go func() {
+       for event := range ch1 {
+           fmt.Printf("Subscriber 1 received: %v\n", event.Data)
+       }
+   }()
 
-	time.Sleep(2 * time.Second)
-	broker.Unsubscribe("example_topic", subscriber)
+   // Second subscriber
+   go func() {
+       for event := range ch2 {
+           fmt.Printf("Subscriber 2 received: %v\n", event.Data)
+       }
+   }()
 
-	broker.Publish("example_topic", "This message won't be received.")
+   // Publishing test messages
+   bus.Publish(Event{Topic: "orders", Data: "Hello World!"})
+   bus.Publish(Event{Topic: "orders", Data: "This is a test message"})
+   bus.Publish(Event{Topic: "orders", Data: "Message broker working!"})
+   
+   // Wait for messages to be processed
+   time.Sleep(2 * time.Second)
+   
+   // Unsubscribe both subscribers
+   unsub1()
+   unsub2()
 
-	time.Sleep(time.Second)
+   // Try publishing after unsubscribe
+   bus.Publish(Event{Topic: "orders", Data: "This won't be received"})
+   
+   time.Sleep(time.Second)
 }
