@@ -1,8 +1,10 @@
-A concurrent message broker using event bus pattern in Go.
-Features
+# Event Bus Message Broker
 
-Topic-based publish/subscribe
-Buffered channels
-Non-blocking message publishing
-Context-based lifecycle management
-Thread-safe operations
+Lightweight, thread-safe message broker using event bus pattern in Go.
+
+## Features
+- Topic-based pub/sub messaging
+- Buffered channels with configurable size 
+- Non-blocking message publishing
+- Context-based lifecycle management
+- Thread-safe operations with RWMutex
